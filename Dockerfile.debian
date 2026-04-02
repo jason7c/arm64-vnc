@@ -1,5 +1,5 @@
-ARG BASEIMAGE=ubuntu
-ARG BASETAG=22.04
+ARG BASEIMAGE=debian
+ARG BASETAG=11-slim
 
 FROM ${BASEIMAGE}:${BASETAG}
 
@@ -14,7 +14,9 @@ ARG ARG_HEADLESS_USER_ID=1001
 ARG ARG_HEADLESS_USER_NAME=headless
 ARG ARG_HEADLESS_USER_GROUP_ID=1001
 ARG ARG_HEADLESS_USER_GROUP_NAME=headless
+ARG ARG_SUDO_INITIAL_PW=headless
 ARG ARG_HOME=/home/headless
+ARG ARG_FEATURES_OVERRIDING_ENVV=1
 
 ENV \
     DEBIAN_FRONTEND=noninteractive \
@@ -24,13 +26,19 @@ ENV \
     VNC_PW="${ARG_VNC_PW}" \
     VNC_RESOLUTION="${ARG_VNC_RESOLUTION}" \
     VNC_VIEW_ONLY="${ARG_VNC_VIEW_ONLY}" \
-    NOVNC_PORT="${ARG_NOVNC_PORT}" \
     NOVNC_HOME="/usr/libexec/noVNCdim" \
+    NOVNC_PORT="${ARG_NOVNC_PORT}" \
     HEADLESS_USER_ID="${ARG_HEADLESS_USER_ID}" \
     HEADLESS_USER_NAME="${ARG_HEADLESS_USER_NAME}" \
     HEADLESS_USER_GROUP_ID="${ARG_HEADLESS_USER_GROUP_ID}" \
     HEADLESS_USER_GROUP_NAME="${ARG_HEADLESS_USER_GROUP_NAME}" \
     HOME="${ARG_HOME}" \
+    STARTUPDIR="/dockerstartup" \
+    FEATURES_OVERRIDING_ENVV="${ARG_FEATURES_OVERRIDING_ENVV}" \
+    FEATURES_VNC=1 \
+    FEATURES_NOVNC=1 \
+    FEATURES_FIREFOX=1 \
+    FEATURES_VERSION_STICKER=1 \
     NO_AT_BRIDGE=1
 
 ### Install essential packages
@@ -41,6 +49,7 @@ RUN apt-get update && apt-get install -y \
         gpg \
         jq \
         nano \
+        procps \
         psmisc \
         python3 \
         python3-numpy \
@@ -53,12 +62,11 @@ RUN apt-get update && apt-get install -y \
         xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-### Install Xfce4 desktop environment
+### Install Xfce4 desktop environment and terminal
 RUN apt-get update && apt-get install -y \
+        mousepad \
         xfce4 \
         xfce4-terminal \
-        elementary-xfce-icon-theme \
-        mousepad \
     && rm -rf /var/lib/apt/lists/*
 
 ### Install TigerVNC server (arm64-compatible via apt)
@@ -90,46 +98,50 @@ RUN printf '<!DOCTYPE html>\n\
     </body>\n\
 </html>\n' > "${NOVNC_HOME}"/index.html
 
-### Install Firefox from Mozilla's official apt repository
-### (Ubuntu 22.04's default firefox package is a snap, which doesn't work in Docker)
+### Install Firefox ESR from Mozilla's official apt repository
 RUN install -d -m 0755 /etc/apt/keyrings \
     && wget -q https://packages.mozilla.org/apt/repo-signing-key.gpg -O- \
         | tee /etc/apt/keyrings/packages.mozilla.org.asc > /dev/null \
+    && gpg -n -q --import --import-options import-show /etc/apt/keyrings/packages.mozilla.org.asc \
+        | awk '/pub/{ getline; gsub(/^ +| +$/,""); \
+            if ($0 == "35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3") \
+                {print "\nThe key fingerprint matches ("$0").\n"; exit 0;} \
+            else {print "\nERROR: Verification failed: the fingerprint ("$0") does not match the expected one.\n"; exit 1;} }' \
     && echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
         | tee /etc/apt/sources.list.d/mozilla.list > /dev/null \
     && printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' \
         | tee /etc/apt/preferences.d/mozilla \
     && apt-get update && apt-get install -y \
-        firefox \
+        firefox-esr \
     && rm -rf /var/lib/apt/lists/*
 
-### Create headless user
-RUN groupadd --gid "${ARG_HEADLESS_USER_GROUP_ID}" "${ARG_HEADLESS_USER_GROUP_NAME}" \
-    && useradd --uid "${ARG_HEADLESS_USER_ID}" \
-               --gid "${ARG_HEADLESS_USER_GROUP_ID}" \
-               --create-home \
-               --home-dir "${ARG_HOME}" \
-               --shell /bin/bash \
-               "${ARG_HEADLESS_USER_NAME}" \
-    && echo "${ARG_HEADLESS_USER_NAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/headless \
-    && chmod 0440 /etc/sudoers.d/headless
+### Set up headless user via /etc/passwd and /etc/group (accetto-style, allows runtime UID/GID override)
+RUN chmod 666 /etc/passwd /etc/group \
+    && echo "${ARG_HEADLESS_USER_GROUP_NAME}:x:${ARG_HEADLESS_USER_GROUP_ID}:" >> /etc/group \
+    && echo "${ARG_HEADLESS_USER_NAME}:x:${ARG_HEADLESS_USER_ID}:${ARG_HEADLESS_USER_GROUP_ID}:Default:${ARG_HOME}:/bin/bash" >> /etc/passwd \
+    && echo "${ARG_HEADLESS_USER_NAME}  ALL=(ALL:ALL) ALL" | tee /etc/sudoers.d/"${ARG_HEADLESS_USER_NAME}" \
+    && mkdir -p "${ARG_HOME}" \
+    && chown "${ARG_HEADLESS_USER_ID}":"${ARG_HEADLESS_USER_GROUP_ID}" "${ARG_HOME}"
 
 ### Copy startup scripts
-COPY src/startup/ /usr/local/bin/
-RUN chmod +x /usr/local/bin/startup.sh \
-              /usr/local/bin/vnc_startup.sh \
-              /usr/local/bin/novnc_startup.sh
+COPY debian/dockerstartup/ "${STARTUPDIR}"/
 
-### Copy desktop files and home resources
-COPY src/home/ "${ARG_HOME}"/
-RUN chown -R "${ARG_HEADLESS_USER_ID}":"${ARG_HEADLESS_USER_GROUP_ID}" "${ARG_HOME}" \
-    && find "${ARG_HOME}" -name '*.desktop' -exec chmod 755 {} +
+### Store the initial sudo password for user_generator
+RUN echo "${ARG_SUDO_INITIAL_PW}" > "${STARTUPDIR}"/.initial_sudo_password \
+    && echo "${ARG_HEADLESS_USER_NAME}:${ARG_SUDO_INITIAL_PW}" | chpasswd
+
+### Copy home resources
+COPY debian/home/ "${ARG_HOME}"/
+
+### Set correct permissions (executable scripts, desktop files, etc.)
+RUN "${STARTUPDIR}"/set_user_permissions.sh "${STARTUPDIR}" "${ARG_HOME}" \
+    && chown -R "${ARG_HEADLESS_USER_ID}":"${ARG_HEADLESS_USER_GROUP_ID}" "${ARG_HOME}" "${STARTUPDIR}"
 
 WORKDIR "${ARG_HOME}"
 
-USER "${ARG_HEADLESS_USER_NAME}"
+USER "${ARG_HEADLESS_USER_ID}"
 
 EXPOSE "${VNC_PORT}"
 EXPOSE "${NOVNC_PORT}"
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/startup.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/dockerstartup/startup.sh"]
