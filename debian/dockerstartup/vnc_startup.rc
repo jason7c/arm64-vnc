@@ -60,8 +60,11 @@ XSTARTUP
     chmod +x "${HOME}"/.vnc/xstartup
 
     ### create VNC configuration file
-    printf "rfbport=${VNC_PORT}\ndepth=${VNC_COL_DEPTH}\ngeometry=${VNC_RESOLUTION}\n" \
+    printf "rfbport=${VNC_PORT}\ndepth=${VNC_COL_DEPTH}\ngeometry=${VNC_RESOLUTION}\nlocalhost=no\n" \
         > "${HOME}"/.vnc/config
+
+    ### sync system password with VNC_PW so screensaver unlock works
+    echo "${HEADLESS_USER_NAME}:${VNC_PW}" | sudo chpasswd 2>/dev/null || true
 
     ### get container IP address
     vnc_ip=$(hostname -i)
