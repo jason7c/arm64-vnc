@@ -5,6 +5,9 @@
 vncserver -kill "${DISPLAY}" 2>/dev/null || true
 rm -f /tmp/.X*-lock /tmp/.X11-unix/X* 2>/dev/null || true
 
+### Sync system password with VNC_PW so screensaver unlock works
+echo "${HEADLESS_USER_NAME:-headless}:${VNC_PW}" | sudo chpasswd 2>/dev/null || true
+
 ### Create VNC password
 mkdir -p "${HOME}/.vnc"
 echo "${VNC_PW}" | vncpasswd -f > "${HOME}/.vnc/passwd"
@@ -31,5 +34,6 @@ vncserver "${DISPLAY}" \
     -geometry "${VNC_RESOLUTION}" \
     -rfbport "${VNC_PORT}" \
     -rfbauth "${HOME}/.vnc/passwd" \
+    -localhost no \
     -fg \
     ${VIEW_ONLY_OPT}
